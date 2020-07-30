@@ -120,7 +120,7 @@ impl Context {
                     hdc,
                     pf_reqs,
                 )
-                .map_err(|_| CreationError::NoAvailablePixelFormat)?
+                    .map_err(|_| CreationError::NoAvailablePixelFormat)?
             } else {
                 choose_native_pixel_format_id(hdc, pf_reqs)
                     .map_err(|_| CreationError::NoAvailablePixelFormat)?
@@ -137,7 +137,7 @@ impl Context {
                 hdc,
                 pixel_format_id,
             )
-            .map_err(|_| CreationError::NoAvailablePixelFormat)?
+                .map_err(|_| CreationError::NoAvailablePixelFormat)?
         } else {
             choose_native_pixel_format(hdc, pf_reqs, pixel_format_id)
                 .map_err(|_| CreationError::NoAvailablePixelFormat)?
@@ -253,6 +253,7 @@ impl Context {
 }
 
 unsafe impl Send for Context {}
+
 unsafe impl Sync for Context {}
 
 /// Creates an OpenGL context.
@@ -387,7 +388,7 @@ unsafe fn create_context(
                             );
                             flags = flags
                                 | gl::wgl_extra::CONTEXT_ROBUST_ACCESS_BIT_ARB
-                                    as raw::c_int;
+                                as raw::c_int;
                         }
                         Robustness::RobustLoseContextOnReset
                         | Robustness::TryRobustLoseContextOnReset => {
@@ -400,7 +401,7 @@ unsafe fn create_context(
                             );
                             flags = flags
                                 | gl::wgl_extra::CONTEXT_ROBUST_ACCESS_BIT_ARB
-                                    as raw::c_int;
+                                as raw::c_int;
                         }
                         Robustness::NotRobust => (),
                         Robustness::NoError => (),
@@ -909,11 +910,48 @@ unsafe fn load_extra_functions(
 
         // getting the class name of the real window
         let mut class_name = [0u16; 128];
-        if GetClassNameW(win, class_name.as_mut_ptr(), 128) == 0 {
+        let len = GetClassNameW(win, class_name.as_mut_ptr(), 128) as usize;
+        if len == 0 {
             return Err(CreationError::OsError(format!(
                 "GetClassNameW function failed: {}",
                 std::io::Error::last_os_error()
             )));
+        }
+
+        // handle the case where the given window handle is the desktop window.
+        // for this special window some of the function below would fail.
+        use std::ffi::OsString;
+        use std::os::windows::prelude::*;
+        let class_name_ = OsString::from_wide(&class_name[..len]);
+        if "WorkerW" == class_name_.to_string_lossy() {
+            let hdc = GetDC(win);
+            if hdc.is_null() {
+                let err = Err(CreationError::OsError(format!(
+                    "GetDC function failed: {}",
+                    std::io::Error::last_os_error()
+                )));
+                return err;
+            }
+
+            let dummy_win = (win, hdc);
+
+            // getting the pixel format that we will use and setting it
+            {
+                let id = choose_dummy_pixel_format(dummy_win.1)?;
+                set_pixel_format(dummy_win.1, id)?;
+            }
+
+            // creating the dummy OpenGL context and making it current
+            let dummy_ctx = create_context(None, dummy_win.0, dummy_win.1)?;
+            let _current_context =
+                CurrentContextGuard::make_current(dummy_win.1, dummy_ctx.0)?;
+
+            // loading the extra WGL functions
+            return Ok(gl::wgl_extra::Wgl::load_with(|addr| {
+                let addr = CString::new(addr.as_bytes()).unwrap();
+                let addr = addr.as_ptr();
+                gl::wgl::GetProcAddress(addr) as *const raw::c_void
+            }));
         }
 
         // access to class information of the real window
